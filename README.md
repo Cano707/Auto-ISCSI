@@ -1,6 +1,6 @@
 # Auto-ISCSI
 
-*Auto-ISCSI* provides the possbility to add systemd service, which automounts iscsi drives
+*Auto-ISCSI* provides the possbility to add a systemd service, which automounts iscsi drives
 to mount points matching the names of the drives. 
 
 *NOTE:* It is not supposed to look pretty but work, since life is to short.
