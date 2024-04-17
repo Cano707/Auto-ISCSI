@@ -21,4 +21,8 @@ in `/mnt/<name>`, where `<name>` matches the corresponding part in:
 iqn.2005-10.org.freenas.ctl:<name>.iscsi;/dev/sda
 ```
 
+## Configuration
+
+The configuration for `ExecStart` inside the service file needs to point to the `mount_iscsi.sh`
+script. 
 

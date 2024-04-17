@@ -3,7 +3,7 @@ Description=Automount iscsi directories
 After=network.target iscsi.service
 
 [Service]
-ExecStart=<PATH_TO_MOUNT_ISCSI_SH>
+ExecStart=<PATH TO SCRITP>
 RemainAfterExit=yes
 
 [Install]
