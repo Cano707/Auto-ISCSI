@@ -1,112 +1,154 @@
 #!bin/bash
+set -e
+
 trap "exit 1" SIGINT
 
+: ${DEBUG:=0}
+DATE=$(date +"%Y%m%d")
 PROG="mount_iscsi"
 TOP_PID=##
+MOUNT_LOGDIR="/var/log/$PROG"
+MOUNT_LOGFILE="$MOUNT_LOGDIR/$DATE"
 
-function fatal {
-	echo $1
+declare -A targets
+: ${mount_dir:='/mnt'}
+
+fatal() {
+	echo $1 | logger -t $PROG
 	kill -s SIGINT $TOP_PID
 }
 
-declare -A targets
-: ${session:=''}
-: ${mount_dir:='/mnt'}
-#devices=""
-
-function log {
-	echo $1 | logger -t ABACKUP
+log() {
+	if [[ $DEBUG ]]; then
+		echo $1
+	else
+		echo $1 | logger -t $PROG
+	fi
 }
 
-function login {
+# >>> HELPER
+create_log_file() {
+	if [[ ! -d $MOUNT_LOGDIR ]]; then
+		mkdir $MOUNT_LOGDIR
+	fi
+	if [[ ! -f $MOUNT_LOGFILE ]]; then
+		touch $MOUNT_LOGFILE
+	fi
+}
+
+del_logs() {
+	log "Clean logs"
+	for file in $(find $MOUNT_LOGDIR -mtime +10); do
+		rm $file
+	done
+}
+# <<<HELPER
+
+# >>> SESSION
+login() {
 	iscsiadm -m node --loginall=all
 	if [[ $? -ne 0 ]]; then
-		fatal Login was unsuccesful. Aborting.
+		fatal Login was unsuccessful. Aborting.
 	else
 		log Login successful
 	fi
 }
 
-function check_session {
-	session=$(sudo iscsiadm -m session 2>&1)
+check_session() {
+	iscsiadm -m session &>/dev/null
 }
 
-function establish_session {
+establish_session() {
+	set +e
 	check_session
+	session=$?
+	set -e
 
-	# If no session is active, log in
-	if [[ x$session == x"iscsiadm: No active sessions." ]]; then
+	if [[ $DEBUG ]]; then
+		log "Session request returned $session"
+	fi
+
+	if [[ $session -eq 21 ]]; then
 		echo No Session
-		echo Logging in...
 		login
 	fi
-	echo "Session established"
+	log "Session established"
 }
+# <<< SESSION
 
-function get_devices {
+# >>> RETRIEVE DATA
+get_targets() {
+	# Returns FQN;DEVICE, e.g. iqn.2005-10.org.freenas.ctl:nas.iscsi;/dev/sdb
 	targets=$(lsscsi -td | tr -s ' ' | grep iscsi | cut -d' ' -f3,4 | awk '{ "cut -d, -f1 <<<"$1 | getline target; printf("%s;%s\n", target, $2) }')
+	if [[ $DEBUG ]]; then
+		log "Targets retrieved: $targets"
+	fi
 }
 
-function match_share_name {
-	share_name=$(echo $1 | perl -ne '/:(.+)\.(?=iscsi)/ && print $1')
+match_share_name() {
+	share_name=$(echo $1 | python -c 'import sys, re; print(re.search(r":(\w+).",sys.stdin.readline()).group(1))')
 }
+# >>> RETRIEVE DATA
 
-function check_mounted_dir {
-	echo "Check if $1 is mount point"
-	mount | awk -v dir="$1" '
-    BEGIN {
-        print "Starting check for:", dir
-    }
-    {
-        gsub(/^[ \t]+|[ \t]+$/, "", dir)
-        if ($3 == "/mnt/"dir) {
-            exit 0;
-        }
-    }
-    ENDFILE {
-        print "Mount point not found for:", dir
-        exit 1;
-    }' >/dev/null 2>&1
-	is_mounted=$?
-	echo "$1 is mounted: $is_mounted"
-	echo
-}
+run_mount() {
+	printf "%s\n" "----------------" >>"$MOUNT_LOGFILE"
+	printf "%s\n" "$(date)" >>"$MOUNT_LOGFILE"
 
-function run_mount {
 	for target in ${targets[@]}; do
-		echo '[i] Performing on ' $target
+		log "Mounting $target"
+
+		#TODO: Scan for partitions
 		target_name=$(echo $target | cut -d';' -f1)
 		device_name=$(echo $target | cut -d';' -f2)
-		echo '[i] Device name ' $device_name
-		echo '[i] Target name ' $target_name
+		log "Device name: $device_name"
+		log "Target name: $target_name"
+
 		match_share_name $target_name ":(.+)\.(?=iscsi)"
-		echo '[i] Share name ' $share_name
-		if [[ -d '/mnt/'$share_name ]]; then
-			echo "[i] Mount dir /mnt/$share_name exists."
-			check_mounted_dir $share_name
-			if [[ $is_mounted -eq 0 ]]; then
-				echo "[i] $target_name is already mounted on /mnt/$share_name"
-				echo "[i] Skip $share_name"
-				continue
-			fi
-		else
-			echo "Create mount dir /mnt/$share_name"
-			mkdir /mnt/$share_name
-			if [[ $? -ne 0 ]]; then
-				fatal "Failed to create mount dir '/mnt/$share_name'"
-			fi
+		log "Share name: $share_name"
+
+		mount_point="/mnt/$share_name"
+		unit_name=$(systemd-escape --suffix=mount --path $mount_point)
+		unit_file="/etc/systemd/system/$unit_name"
+		if [[ -f $unit_file ]]; then
+			log "Mount unit exists: $unit_file. Continue."
+			continue
 		fi
 
-		# mount to directory
-		echo "Mount $share_name on $device_name to /mnt/$share_name"
-		mount ${device_name}1 /mnt/$share_name
-		echo
+		mkdir -p $mount_point
+		log "Mount point created: $mount_point"
+
+		cat <<EOF >"$unit_file"
+[Unit]
+Description=Mount ISCSI drive $share_name to $mount_point
+After=network.target
+
+[Mount]
+What=${device_name}1
+Where=$mount_point
+Type=auto
+Options=rw,exec,dev,user,
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+		log "Mount unit created $unit_file with device ${device_name}1"
+
+		systemctl daemon-reload
+		log "Systemctl daemon reloaded."
+
+		systemctl start "$unit_name"
+		log "Mount unit started."
+
+		printf "%s\n" "$unit_file" >>"$MOUNT_LOGFILE"
 	done
 }
 
 # ------------- MAIN -------------
 
+create_log_file
+del_logs
 establish_session
 sleep 5 # Sleep 5 seconds such that iscsi can finish creating the devices
-get_devices
+get_targets
 run_mount
