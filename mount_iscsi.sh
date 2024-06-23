@@ -5,16 +5,17 @@ trap "exit 1" SIGINT
 
 : ${DEBUG:=0}
 DATE=$(date +"%Y%m%d")
-PROG="mount_iscsi"
+PROG="ISCSI Automount"
+PROG_INTERNAL="mount_iscsi"
 TOP_PID=##
-MOUNT_LOGDIR="/var/log/$PROG"
+MOUNT_LOGDIR="/var/log/$PROG_INTERNAL"
 MOUNT_LOGFILE="$MOUNT_LOGDIR/$DATE"
 
 declare -A targets
 : ${mount_dir:='/mnt'}
 
 fatal() {
-	echo $1 | logger -t $PROG
+	echo $1 | logger -t $PROG_INTERNAL
 	kill -s SIGINT $TOP_PID
 }
 
@@ -22,7 +23,7 @@ log() {
 	if [[ $DEBUG ]]; then
 		echo $1
 	else
-		echo $1 | logger -t $PROG
+		echo $1 | logger -t $PROG_INTERNAL
 	fi
 }
 
@@ -42,13 +43,25 @@ del_logs() {
 		rm $file
 	done
 }
+
+notify() {
+	local summary=$1
+	local body=$2
+	local display=":$(ls /tmp/.X11-unix/* | grep -o "[[:digit:]] ")"
+	local user=$(who | grep ":$active_display" | awk '{printf("%s\n", $1)}' | head -n 1)
+	local uid=$(id -u $user)
+	sudo -u $user DISPLAY=$display DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus notify-send -a "$PROG" -u normal "$summary" "$body"
+}
 # <<<HELPER
 
 # >>> SESSION
 login() {
-	iscsiadm -m node --loginall=all
+	timeout 1 iscsiadm -m node --loginall=all
 	if [[ $? -ne 0 ]]; then
-		fatal Login was unsuccessful. Aborting.
+		echo "A"
+		local msg="Login to ISCSI was unsuccessful."
+		notify "Failed login" $msg
+		fatal "$msg Aborting."
 	else
 		log Login successful
 	fi
