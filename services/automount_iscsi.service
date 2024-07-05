@@ -1,0 +1,9 @@
+[Unit]
+Description=Automount iscsi directories
+After=network.target iscsi.service autologin_iscsi.service
+
+[Service]
+ExecStart=./automount_iscsi.sh
+
+[Install]
+WantedBy=multi-user.target
